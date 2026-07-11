@@ -1,4 +1,5 @@
 const Telemetry = require("../models/Telemetry");
+const Alert = require("../models/Alert");
 
 const getRecentTelemetry = async (machineId, limit = 5) => {
   return Telemetry.find({ machineId }).sort({ timestamp: -1 }).limit(limit);
@@ -109,6 +110,59 @@ const detectStatus = async (machine, telemetryInput) => {
             message: alertMessage,
           },
   };
+};
+
+const createAlert = async (machine, detectionResult) => {
+  try {
+    // 🔥 ANTI-DUPLICATE : vérifier si une alerte ouverte identique existe
+    const existingOpen = await Alert.findOne({
+      machineId: machine._id,
+      type: detectionResult.type,
+      status: "open",
+    });
+
+    if (existingOpen) {
+      console.log(
+        `[Alert] Duplicate prevented for ${machine.machineId} - ${detectionResult.type} already open`,
+      );
+      return null;
+    }
+
+    // Si une alerte d'un AUTRE type est ouverte pour cette machine, la résoudre
+    const otherOpen = await Alert.findOne({
+      machineId: machine._id,
+      status: "open",
+      type: { $ne: detectionResult.type },
+    });
+
+    if (otherOpen) {
+      otherOpen.status = "resolved";
+      otherOpen.resolvedAt = new Date();
+      await otherOpen.save();
+      console.log(
+        `[Alert] Auto-resolved older ${otherOpen.type} for ${machine.machineId}`,
+      );
+    }
+
+    const alert = new Alert({
+      machineId: machine._id,
+      type: detectionResult.type,
+      severity: detectionResult.severity,
+      title: detectionResult.title,
+      message: detectionResult.message,
+      status: "open",
+      triggeredAt: new Date(),
+    });
+
+    await alert.save();
+    console.log(
+      `[Alert] Created: ${detectionResult.type} for ${machine.machineId}`,
+    );
+    return alert;
+  } catch (err) {
+    console.error("[Alert] Failed to create alert:", err);
+    return null;
+  }
 };
 
 module.exports = {
