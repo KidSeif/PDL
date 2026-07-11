@@ -83,6 +83,7 @@ router.post("/", authDevice, async (req, res, next) => {
         type: detectionResult.alert.type,
         status: "open",
       }); 
+      
 
       if (!existingOpenAlert) {
         //  AUTO-RESOLVE : si une alerte d'un AUTRE type est ouverte, la fermer
