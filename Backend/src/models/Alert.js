@@ -3,8 +3,7 @@ const mongoose = require("mongoose");
 const alertSchema = new mongoose.Schema(
   {
     machineId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Machine",
+      type: String, 
       required: true,
     },
     type: {
