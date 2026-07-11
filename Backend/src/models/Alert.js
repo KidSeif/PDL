@@ -3,33 +3,30 @@ const mongoose = require("mongoose");
 const alertSchema = new mongoose.Schema(
   {
     machineId: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Machine",
       required: true,
-      index: true,
     },
     type: {
       type: String,
-      enum: ["ANOMALY", "DRIFT", "FAILURE_PROBABLE"],
       required: true,
     },
     severity: {
       type: String,
-      enum: ["warning", "critical"],
-      required: true,
+      enum: ["info", "warning", "critical"],
+      default: "warning",
     },
     title: {
       type: String,
       required: true,
-      trim: true,
     },
     message: {
       type: String,
       required: true,
-      trim: true,
     },
     status: {
       type: String,
-      enum: ["open", "resolved"],
+      enum: ["open", "resolved", "escalated"],
       default: "open",
     },
     triggeredAt: {
@@ -38,7 +35,12 @@ const alertSchema = new mongoose.Schema(
     },
     resolvedAt: {
       type: Date,
-      default: null,
+    },
+    escalatedAt: {
+      type: Date,
+    },
+    escalatedTo: {
+      type: String,
     },
   },
   {
