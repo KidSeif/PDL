@@ -94,11 +94,12 @@ router.post("/", authDevice, async (req, res, next) => {
         });
 
         if (otherOpenAlert) {
-          otherOpenAlert.status = "resolved";
-          otherOpenAlert.resolvedAt = new Date();
+          otherOpenAlert.status = "escalated";
+          otherOpenAlert.escalatedAt = new Date();
+          otherOpenAlert.escalatedTo = detectionResult.alert.type;
           await otherOpenAlert.save();
           console.log(
-            `[Alert] Auto-resolved ${otherOpenAlert.type} for ${machineId} (new: ${detectionResult.alert.type})`,
+            `[Alert] ESCALATED ${otherOpenAlert.type} → ${detectionResult.alert.type} for ${machineId}`,
           );
         }
 
