@@ -77,6 +77,7 @@ router.post("/", authDevice, async (req, res, next) => {
     await machine.save();
 
     if (detectionResult.alert) {
+      // ANTI-DUPLICATE : même type déjà ouvert ?
       const existingOpenAlert = await Alert.findOne({
         machineId,
         type: detectionResult.alert.type,
@@ -84,6 +85,22 @@ router.post("/", authDevice, async (req, res, next) => {
       });
 
       if (!existingOpenAlert) {
+        //  AUTO-RESOLVE : si une alerte d'un AUTRE type est ouverte, la fermer
+        const otherOpenAlert = await Alert.findOne({
+          machineId,
+          status: "open",
+          type: { $ne: detectionResult.alert.type },
+        });
+
+        if (otherOpenAlert) {
+          otherOpenAlert.status = "resolved";
+          otherOpenAlert.resolvedAt = new Date();
+          await otherOpenAlert.save();
+          console.log(
+            `[Alert] Auto-resolved ${otherOpenAlert.type} for ${machineId} (new: ${detectionResult.alert.type})`,
+          );
+        }
+
         await Alert.create({
           machineId,
           type: detectionResult.alert.type,
