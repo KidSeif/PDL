@@ -8,6 +8,7 @@ const authRoutes = require("./routes/auth.routes");
 const machinesRoutes = require("./routes/machines.routes");
 const telemetryRoutes = require("./routes/telemetry.routes");
 const alertsRoutes = require("./routes/alerts.routes");
+const analyticsRoutes = require("./routes/analytics.routes");
 
 const notFound = require("./middlewares/notFound");
 const errorHandler = require("./middlewares/errorHandler");
@@ -32,8 +33,11 @@ app.use("/api/auth", authRoutes);
 app.use("/api/machines", machinesRoutes);
 app.use("/api/telemetry", telemetryRoutes);
 app.use("/api/alerts", alertsRoutes);
+app.use("/api/analytics", analyticsRoutes);
+
 
 app.use(notFound);
 app.use(errorHandler);
+
 
 module.exports = app;
