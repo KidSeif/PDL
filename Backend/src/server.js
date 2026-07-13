@@ -1,14 +1,22 @@
 const app = require("./app");
 const connectDB = require("./config/db");
 const env = require("./config/env");
-const logger = require("./utils/logger");
+const { startSimulationService } = require("./services/simulationService");
+
+const PORT = env.port || 5000;
 
 const startServer = async () => {
-  await connectDB();
+  try {
+    await connectDB();
 
-  app.listen(env.port, () => {
-    logger.info(`Server running on http://localhost:${env.port}`);
-  });
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      startSimulationService();
+    });
+  } catch (error) {
+    console.error("Server startup failed:", error.message);
+    process.exit(1);
+  }
 };
 
 startServer();

@@ -3,9 +3,9 @@ const Machine = require("../models/Machine");
 const Alert = require("../models/Alert");
 const Telemetry = require("../models/Telemetry");
 const authJwt = require("../middlewares/authJwt");
+const { analyzePrediction } = require("../services/prediction");
 
 const router = express.Router();
-
 
 // GET /api/analytics/overview
 router.get("/overview", authJwt, async (req, res, next) => {
@@ -40,6 +40,37 @@ router.get("/overview", authJwt, async (req, res, next) => {
       summary,
       machines,
       latestTelemetry,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/analytics/predict/:machineId
+router.get("/predict/:machineId", authJwt, async (req, res, next) => {
+  try {
+    const { machineId } = req.params;
+
+    const machine = await Machine.findOne({ machineId });
+
+    if (!machine) {
+      return res.status(404).json({
+        success: false,
+        message: "Machine not found",
+      });
+    }
+
+    const telemetryHistory = await Telemetry.find({ machineId })
+      .sort({ timestamp: -1 })
+      .limit(30)
+      .lean();
+
+    const prediction = analyzePrediction(machine, telemetryHistory);
+
+    return res.status(200).json({
+      success: true,
+      machineId,
+      prediction,
     });
   } catch (error) {
     next(error);

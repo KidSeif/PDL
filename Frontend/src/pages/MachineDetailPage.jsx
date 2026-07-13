@@ -8,6 +8,7 @@ export default function MachineDetailPage() {
   const [machine, setMachine] = useState(null);
   const [telemetry, setTelemetry] = useState([]);
   const [alerts, setAlerts] = useState([]);
+  const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -43,13 +44,13 @@ export default function MachineDetailPage() {
         setLoading(true);
         setError(null);
 
-        // Machine details — CORRECTION : res.data.machine
+        // Machine details
         const machineRes = await api.get(`/machines/${machineId}`);
         const machineData = machineRes.data?.machine || machineRes.data;
         console.log("Machine data:", machineData);
         setMachine(machineData);
 
-        // Telemetry history — CORRECTION : res.data.telemetry
+        // Telemetry history
         const telemRes = await api.get(
           `/telemetry/history/${machineId}?limit=50`,
         );
@@ -58,6 +59,19 @@ export default function MachineDetailPage() {
           : telemRes.data?.telemetry || telemRes.data?.data || [];
         console.log("Telemetry data:", telemData.length, telemData);
         setTelemetry(telemData.reverse());
+
+        // Prediction
+        try {
+          const predictionRes = await api.get(
+            `/analytics/predict/${machineId}`,
+          );
+          const predictionData = predictionRes.data?.prediction || null;
+          console.log("Prediction data:", predictionData);
+          setPrediction(predictionData);
+        } catch (predictionError) {
+          console.error("Prediction fetch error:", predictionError);
+          setPrediction(null);
+        }
 
         // Alerts
         const alertsRes = await api.get("/alerts");
@@ -137,6 +151,7 @@ export default function MachineDetailPage() {
       return (
         <div style={{ color: "#9ca3af", fontSize: "0.85rem" }}>No data</div>
       );
+
     const values = data.map(
       (d) =>
         d.value ||
@@ -147,9 +162,11 @@ export default function MachineDetailPage() {
         d.distance ||
         0,
     );
+
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min || 1;
+
     const points = values
       .map((v, i) => {
         const x = (i / (values.length - 1)) * width;
@@ -216,9 +233,9 @@ export default function MachineDetailPage() {
     },
   ];
 
-  // Helper pour détecter les escalades
   const getAlertStatus = (alert, allAlerts) => {
     const status = (alert.status || "").toLowerCase();
+
     if (status === "escalated") {
       return {
         badge: "ESCALATED",
@@ -226,23 +243,31 @@ export default function MachineDetailPage() {
         message: `Escalated to ${alert.escalatedTo || "critical"}`,
       };
     }
+
     if (status === "resolved") {
       const mid =
         typeof alert.machineId === "object"
           ? alert.machineId?._id
           : alert.machineId;
+
       const alertTime = new Date(
         alert.resolvedAt || alert.updatedAt || alert.createdAt,
       );
+
       const newerAlert = allAlerts.find((a) => {
         if (a._id === alert._id) return false;
+
         const aMid =
           typeof a.machineId === "object" ? a.machineId?._id : a.machineId;
+
         if (aMid !== mid) return false;
+
         const aTime = new Date(a.triggeredAt || a.createdAt);
         const diffMs = aTime - alertTime;
+
         return diffMs >= 0 && diffMs < 120000;
       });
+
       if (newerAlert) {
         return {
           badge: "ESCALATED",
@@ -250,12 +275,16 @@ export default function MachineDetailPage() {
           message: `Escalated to ${newerAlert.type || "critical"}`,
         };
       }
+
       return {
         badge: "RESOLVED",
         color: "#16a34a",
-        message: `Resolved ${alert.resolvedAt ? new Date(alert.resolvedAt).toLocaleString() : ""}`,
+        message: `Resolved ${
+          alert.resolvedAt ? new Date(alert.resolvedAt).toLocaleString() : ""
+        }`,
       };
     }
+
     return { badge: null, color: null, message: null };
   };
 
@@ -333,6 +362,7 @@ export default function MachineDetailPage() {
             Machine ID: {machine.machineId}
           </p>
         </div>
+
         <div style={{ textAlign: "right" }}>
           <div
             style={{
@@ -357,6 +387,164 @@ export default function MachineDetailPage() {
 
       <div
         style={{
+          background: "#fff",
+          borderRadius: "12px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+          border: "1px solid #e5e7eb",
+          padding: "24px",
+          marginBottom: "24px",
+        }}
+      >
+        <h2
+          style={{
+            margin: "0 0 16px",
+            fontSize: "1.25rem",
+            fontWeight: 700,
+            color: "#111827",
+          }}
+        >
+          Prediction
+        </h2>
+
+        {!prediction ? (
+          <p style={{ color: "#6b7280", margin: 0 }}>
+            Prediction data is not available.
+          </p>
+        ) : !prediction.enoughData ? (
+          <p style={{ color: "#6b7280", margin: 0 }}>
+            {prediction.message ||
+              "Not enough telemetry history for prediction."}
+          </p>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "16px",
+            }}
+          >
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background: "#f9fafb",
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Predicted Temperature
+              </div>
+              <div
+                style={{
+                  fontSize: "1.35rem",
+                  fontWeight: 700,
+                  color: "#dc2626",
+                }}
+              >
+                {prediction.predictedTemperature} °C
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background: "#f9fafb",
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Predicted Vibration
+              </div>
+              <div
+                style={{
+                  fontSize: "1.35rem",
+                  fontWeight: 700,
+                  color: "#7c3aed",
+                }}
+              >
+                {prediction.predictedVibration} g
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background: statusBg(prediction.predictedStatus),
+                border: `1px solid ${statusColor(prediction.predictedStatus)}30`,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Predicted Status
+              </div>
+              <div
+                style={{
+                  fontSize: "1.35rem",
+                  fontWeight: 700,
+                  color: statusColor(prediction.predictedStatus),
+                }}
+              >
+                {prediction.predictedStatus}
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background: "#f9fafb",
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Risk Score
+              </div>
+              <div
+                style={{
+                  fontSize: "1.35rem",
+                  fontWeight: 700,
+                  color:
+                    prediction.riskScore >= 80
+                      ? "#dc2626"
+                      : prediction.riskScore >= 60
+                        ? "#ea580c"
+                        : "#16a34a",
+                }}
+              >
+                {prediction.riskScore} / 100
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div
+        style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
           gap: "16px",
@@ -368,6 +556,7 @@ export default function MachineDetailPage() {
           const history = telemetry
             .map((t) => ({ value: t[metric.key] }))
             .filter((t) => t.value !== undefined && t.value !== null);
+
           return (
             <div
               key={metric.key}
@@ -433,6 +622,7 @@ export default function MachineDetailPage() {
         >
           Latest Alert
         </h2>
+
         {alerts.length === 0 ? (
           <p style={{ color: "#6b7280", margin: 0 }}>
             No alerts for this machine.
@@ -443,6 +633,7 @@ export default function MachineDetailPage() {
           >
             {alerts.slice(0, 1).map((alert) => {
               const status = getAlertStatus(alert, alerts);
+
               return (
                 <div
                   key={alert._id}
@@ -453,7 +644,13 @@ export default function MachineDetailPage() {
                       alert.status === "resolved" && status.badge === "RESOLVED"
                         ? "#f9fafb"
                         : "#fef2f2",
-                    borderLeft: `3px solid ${status.badge === "ESCALATED" ? "#ea580c" : alert.status === "resolved" ? "#16a34a" : "#dc2626"}`,
+                    borderLeft: `3px solid ${
+                      status.badge === "ESCALATED"
+                        ? "#ea580c"
+                        : alert.status === "resolved"
+                          ? "#16a34a"
+                          : "#dc2626"
+                    }`,
                     fontSize: "0.9rem",
                   }}
                 >
@@ -476,6 +673,7 @@ export default function MachineDetailPage() {
                   </strong>
                   {" — "}
                   {alert.title || alert.message}
+
                   {status.message && (
                     <span
                       style={{
@@ -489,6 +687,7 @@ export default function MachineDetailPage() {
                       {status.message}
                     </span>
                   )}
+
                   <span
                     style={{
                       color: "#9ca3af",
