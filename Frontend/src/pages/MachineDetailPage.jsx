@@ -44,13 +44,11 @@ export default function MachineDetailPage() {
         setLoading(true);
         setError(null);
 
-        // Machine details
         const machineRes = await api.get(`/machines/${machineId}`);
         const machineData = machineRes.data?.machine || machineRes.data;
         console.log("Machine data:", machineData);
         setMachine(machineData);
 
-        // Telemetry history
         const telemRes = await api.get(
           `/telemetry/history/${machineId}?limit=50`,
         );
@@ -60,7 +58,6 @@ export default function MachineDetailPage() {
         console.log("Telemetry data:", telemData.length, telemData);
         setTelemetry(telemData.reverse());
 
-        // Prediction
         try {
           const predictionRes = await api.get(
             `/analytics/predict/${machineId}`,
@@ -73,7 +70,6 @@ export default function MachineDetailPage() {
           setPrediction(null);
         }
 
-        // Alerts
         const alertsRes = await api.get("/alerts");
         const allAlerts = alertsRes.data?.alerts || [];
         const machineAlerts = allAlerts.filter((a) => {
@@ -147,10 +143,11 @@ export default function MachineDetailPage() {
   const latestTelem = telemetry[telemetry.length - 1] || {};
 
   const Sparkline = ({ data, color, height = 60, width = 300 }) => {
-    if (!data || !data.length)
+    if (!data || !data.length) {
       return (
         <div style={{ color: "#9ca3af", fontSize: "0.85rem" }}>No data</div>
       );
+    }
 
     const values = data.map(
       (d) =>
@@ -539,6 +536,152 @@ export default function MachineDetailPage() {
                 {prediction.riskScore} / 100
               </div>
             </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background:
+                  prediction.nextEvent === "ESCALATION"
+                    ? "#fef2f2"
+                    : prediction.nextEvent === "ALERT"
+                      ? "#fff7ed"
+                      : "#f9fafb",
+                border: `1px solid ${
+                  prediction.nextEvent === "ESCALATION"
+                    ? "#dc2626"
+                    : prediction.nextEvent === "ALERT"
+                      ? "#ea580c"
+                      : "#e5e7eb"
+                }`,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Next Event
+              </div>
+              <div
+                style={{
+                  fontSize: "1.2rem",
+                  fontWeight: 700,
+                  color:
+                    prediction.nextEvent === "ESCALATION"
+                      ? "#dc2626"
+                      : prediction.nextEvent === "ALERT"
+                        ? "#ea580c"
+                        : "#6b7280",
+                }}
+              >
+                {prediction.nextEvent || "NONE"}
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background:
+                  prediction.nextEvent === "ESCALATION"
+                    ? "#fef2f2"
+                    : prediction.nextEvent === "ALERT"
+                      ? "#fff7ed"
+                      : "#f9fafb",
+                border: `1px solid ${
+                  prediction.nextEvent === "ESCALATION"
+                    ? "#dc2626"
+                    : prediction.nextEvent === "ALERT"
+                      ? "#ea580c"
+                      : "#e5e7eb"
+                }`,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Time to Alert
+              </div>
+              <div
+                style={{
+                  fontSize: "1.1rem",
+                  fontWeight: 700,
+                  color:
+                    prediction.timeToAlertMinutes === null
+                      ? "#6b7280"
+                      : "#ea580c",
+                  marginBottom: "4px",
+                }}
+              >
+                {prediction.timeToAlertMinutes === null
+                  ? "Not expected"
+                  : `${prediction.timeToAlertMinutes} min`}
+              </div>
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#9ca3af",
+                }}
+              >
+                Driver: {prediction.alertDriver || "N/A"}
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: "16px",
+                borderRadius: "10px",
+                background:
+                  prediction.timeToEscalationMinutes !== null
+                    ? "#fef2f2"
+                    : "#f9fafb",
+                border: `1px solid ${
+                  prediction.timeToEscalationMinutes !== null
+                    ? "#dc2626"
+                    : "#e5e7eb"
+                }`,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#6b7280",
+                  marginBottom: "6px",
+                }}
+              >
+                Time to Escalation
+              </div>
+              <div
+                style={{
+                  fontSize: "1.1rem",
+                  fontWeight: 700,
+                  color:
+                    prediction.timeToEscalationMinutes === null
+                      ? "#6b7280"
+                      : "#dc2626",
+                  marginBottom: "4px",
+                }}
+              >
+                {prediction.timeToEscalationMinutes === null
+                  ? "Not expected"
+                  : `${prediction.timeToEscalationMinutes} min`}
+              </div>
+              <div
+                style={{
+                  fontSize: "0.8rem",
+                  color: "#9ca3af",
+                }}
+              >
+                Driver: {prediction.escalationDriver || "N/A"}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -593,7 +736,7 @@ export default function MachineDetailPage() {
                   }}
                 >
                   {val !== undefined && val !== null
-                    ? `${val}${metric.unit ? " " + metric.unit : ""}`
+                    ? `${val}${metric.unit ? ` ${metric.unit}` : ""}`
                     : "—"}
                 </span>
               </div>

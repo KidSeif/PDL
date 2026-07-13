@@ -1,3 +1,6 @@
+const SAMPLE_INTERVAL_SECONDS = 10;
+const PROJECTION_OFFSET_SAMPLES = 5;
+
 const round = (value, digits = 2) => {
   return Number(Number(value).toFixed(digits));
 };
@@ -90,6 +93,117 @@ const derivePredictedStatus = (
   return "NORMAL";
 };
 
+const estimateTimeToThreshold = (
+  currentValue,
+  threshold,
+  slopePerSample,
+  sampleIntervalSeconds = SAMPLE_INTERVAL_SECONDS,
+) => {
+  if (typeof currentValue !== "number" || typeof threshold !== "number") {
+    return null;
+  }
+
+  if (currentValue >= threshold) {
+    return 0;
+  }
+
+  if (typeof slopePerSample !== "number" || slopePerSample <= 0) {
+    return null;
+  }
+
+  const samplesToThreshold = (threshold - currentValue) / slopePerSample;
+
+  if (!Number.isFinite(samplesToThreshold) || samplesToThreshold < 0) {
+    return null;
+  }
+
+  const minutes = (samplesToThreshold * sampleIntervalSeconds) / 60;
+  return round(minutes, 2);
+};
+
+const getSoonestEvent = (events = []) => {
+  const validEvents = events.filter(
+    (event) => event && typeof event.minutes === "number",
+  );
+
+  if (!validEvents.length) {
+    return { minutes: null, driver: null };
+  }
+
+  validEvents.sort((a, b) => a.minutes - b.minutes);
+  return validEvents[0];
+};
+
+const buildTimeline = ({
+  currentStatus,
+  latestTemperature,
+  latestVibration,
+  temperatureSlope,
+  vibrationSlope,
+  thresholds,
+}) => {
+  const {
+    temperatureWarning = 60,
+    temperatureCritical = 75,
+    vibrationWarning = 4.0,
+    vibrationCritical = 6.5,
+  } = thresholds || {};
+
+  const tempAlert = estimateTimeToThreshold(
+    latestTemperature,
+    temperatureWarning,
+    temperatureSlope,
+  );
+  const vibAlert = estimateTimeToThreshold(
+    latestVibration,
+    vibrationWarning,
+    vibrationSlope,
+  );
+
+  const tempCritical = estimateTimeToThreshold(
+    latestTemperature,
+    temperatureCritical,
+    temperatureSlope,
+  );
+  const vibCritical = estimateTimeToThreshold(
+    latestVibration,
+    vibrationCritical,
+    vibrationSlope,
+  );
+
+  const soonestAlert = getSoonestEvent([
+    { driver: "temperature", minutes: tempAlert },
+    { driver: "vibration", minutes: vibAlert },
+  ]);
+
+  const soonestEscalation = getSoonestEvent([
+    { driver: "temperature", minutes: tempCritical },
+    { driver: "vibration", minutes: vibCritical },
+  ]);
+
+  let nextEvent = "NONE";
+
+  if (currentStatus === "NORMAL") {
+    if (soonestAlert.minutes !== null) {
+      nextEvent = "ALERT";
+    } else if (soonestEscalation.minutes !== null) {
+      nextEvent = "ESCALATION";
+    }
+  } else if (currentStatus === "ALERT") {
+    if (soonestEscalation.minutes !== null) {
+      nextEvent = "ESCALATION";
+    }
+  }
+
+  return {
+    nextEvent,
+    timeToAlertMinutes: soonestAlert.minutes,
+    timeToEscalationMinutes: soonestEscalation.minutes,
+    alertDriver: soonestAlert.driver,
+    escalationDriver: soonestEscalation.driver,
+  };
+};
+
 const analyzePrediction = (machine, telemetryHistory = []) => {
   if (!machine) {
     throw new Error("Machine is required for prediction analysis");
@@ -106,6 +220,11 @@ const analyzePrediction = (machine, telemetryHistory = []) => {
       predictedVibration: null,
       riskScore: 0,
       predictedStatus: machine.currentStatus || "NORMAL",
+      nextEvent: "NONE",
+      timeToAlertMinutes: null,
+      timeToEscalationMinutes: null,
+      alertDriver: null,
+      escalationDriver: null,
       trend: {
         temperatureSlope: 0,
         vibrationSlope: 0,
@@ -126,7 +245,7 @@ const analyzePrediction = (machine, telemetryHistory = []) => {
   const temperatureModel = linearRegression(temperaturePoints);
   const vibrationModel = linearRegression(vibrationPoints);
 
-  const nextIndex = history.length + 5;
+  const nextIndex = history.length + PROJECTION_OFFSET_SAMPLES;
 
   const predictedTemperature = round(
     predictFromModel(temperatureModel, nextIndex),
@@ -134,6 +253,7 @@ const analyzePrediction = (machine, telemetryHistory = []) => {
   const predictedVibration = round(predictFromModel(vibrationModel, nextIndex));
 
   const thresholds = machine.thresholds || {};
+  const latest = history[history.length - 1];
 
   const temperatureRisk = calculateRisk(
     predictedTemperature,
@@ -155,18 +275,32 @@ const analyzePrediction = (machine, telemetryHistory = []) => {
     thresholds,
   );
 
+  const timeline = buildTimeline({
+    currentStatus: machine.currentStatus || "NORMAL",
+    latestTemperature: latest.temperature,
+    latestVibration: latest.vibration,
+    temperatureSlope: temperatureModel.slope,
+    vibrationSlope: vibrationModel.slope,
+    thresholds,
+  });
+
   return {
     enoughData: true,
     sampleSize: history.length,
     latestTelemetry: {
-      temperature: round(history[history.length - 1].temperature),
-      vibration: round(history[history.length - 1].vibration),
-      timestamp: history[history.length - 1].timestamp,
+      temperature: round(latest.temperature),
+      vibration: round(latest.vibration),
+      timestamp: latest.timestamp,
     },
     predictedTemperature,
     predictedVibration,
     predictedStatus,
     riskScore,
+    nextEvent: timeline.nextEvent,
+    timeToAlertMinutes: timeline.timeToAlertMinutes,
+    timeToEscalationMinutes: timeline.timeToEscalationMinutes,
+    alertDriver: timeline.alertDriver,
+    escalationDriver: timeline.escalationDriver,
     trend: {
       temperatureSlope: round(temperatureModel.slope, 4),
       vibrationSlope: round(vibrationModel.slope, 4),
