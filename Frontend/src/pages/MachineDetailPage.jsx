@@ -1,16 +1,26 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import { useParams, Link } from "react-router-dom";
 import api from "../api/axios";
 
 export default function MachineDetailPage() {
   const { machineId } = useParams();
+
   const [machine, setMachine] = useState(null);
   const [telemetry, setTelemetry] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [prediction, setPrediction] = useState(null);
-  const [loading, setLoading] = useState(true);
+
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [error, setError] = useState(null);
+
+  const [animatedCards, setAnimatedCards] = useState({});
+
+  const refreshLockRef = useRef(false);
+  const highlightTimeoutsRef = useRef({});
+  const previousSnapshotRef = useRef(null);
 
   const statusColor = (status) => {
     switch (status) {
@@ -38,64 +48,258 @@ export default function MachineDetailPage() {
     }
   };
 
+  const clearHighlightTimers = () => {
+    Object.values(highlightTimeoutsRef.current).forEach(clearTimeout);
+    highlightTimeoutsRef.current = {};
+  };
+
+  const triggerCardAnimations = (cardKeys = []) => {
+    if (!cardKeys.length) return;
+
+    setAnimatedCards((prev) => {
+      const next = { ...prev };
+      cardKeys.forEach((key) => {
+        next[key] = true;
+      });
+      return next;
+    });
+
+    cardKeys.forEach((key) => {
+      if (highlightTimeoutsRef.current[key]) {
+        clearTimeout(highlightTimeoutsRef.current[key]);
+      }
+
+      highlightTimeoutsRef.current[key] = setTimeout(() => {
+        setAnimatedCards((prev) => ({
+          ...prev,
+          [key]: false,
+        }));
+      }, 1000);
+    });
+  };
+
+  const buildSnapshot = ({
+    machineData,
+    telemetryAsc,
+    predictionData,
+    fallback,
+  }) => {
+    const latest = telemetryAsc[telemetryAsc.length - 1] || {};
+
+    return {
+      currentStatus:
+        machineData?.currentStatus ?? fallback?.currentStatus ?? null,
+      temperature: latest.temperature ?? fallback?.temperature ?? null,
+      humidity: latest.humidity ?? fallback?.humidity ?? null,
+      vibration: latest.vibration ?? fallback?.vibration ?? null,
+      luminosity: latest.luminosity ?? fallback?.luminosity ?? null,
+      distance: latest.distance ?? fallback?.distance ?? null,
+
+      predictedTemperature:
+        predictionData?.predictedTemperature ??
+        fallback?.predictedTemperature ??
+        null,
+      predictedVibration:
+        predictionData?.predictedVibration ??
+        fallback?.predictedVibration ??
+        null,
+      predictedStatus:
+        predictionData?.predictedStatus ?? fallback?.predictedStatus ?? null,
+      riskScore: predictionData?.riskScore ?? fallback?.riskScore ?? null,
+      nextEvent: predictionData?.nextEvent ?? fallback?.nextEvent ?? null,
+      timeToAlertMinutes:
+        predictionData?.timeToAlertMinutes ??
+        fallback?.timeToAlertMinutes ??
+        null,
+      timeToEscalationMinutes:
+        predictionData?.timeToEscalationMinutes ??
+        fallback?.timeToEscalationMinutes ??
+        null,
+    };
+  };
+
+  const getChangedCardKeys = (previous, next) => {
+    if (!previous || !next) return [];
+
+    const comparisons = [
+      { snapshotKey: "currentStatus", cardKey: "current-status" },
+      { snapshotKey: "temperature", cardKey: "metric-temperature" },
+      { snapshotKey: "humidity", cardKey: "metric-humidity" },
+      { snapshotKey: "vibration", cardKey: "metric-vibration" },
+      { snapshotKey: "luminosity", cardKey: "metric-luminosity" },
+      { snapshotKey: "distance", cardKey: "metric-distance" },
+      { snapshotKey: "predictedTemperature", cardKey: "pred-temp" },
+      { snapshotKey: "predictedVibration", cardKey: "pred-vib" },
+      { snapshotKey: "predictedStatus", cardKey: "pred-status" },
+      { snapshotKey: "riskScore", cardKey: "risk-score" },
+      { snapshotKey: "nextEvent", cardKey: "next-event" },
+      { snapshotKey: "timeToAlertMinutes", cardKey: "time-alert" },
+      {
+        snapshotKey: "timeToEscalationMinutes",
+        cardKey: "time-escalation",
+      },
+    ];
+
+    return comparisons
+      .filter(({ snapshotKey }) => previous[snapshotKey] !== next[snapshotKey])
+      .map(({ cardKey }) => cardKey);
+  };
+
+  const withCardAnimation = (baseStyle, cardKey, accent = "#2563eb") => {
+    const isActive = Boolean(animatedCards[cardKey]);
+
+    return {
+      ...baseStyle,
+      transition:
+        "transform 220ms ease, box-shadow 260ms ease, border-color 260ms ease, background-color 260ms ease",
+      transform: isActive
+        ? "translateY(-2px) scale(1.01)"
+        : "translateY(0) scale(1)",
+      boxShadow: isActive
+        ? `0 0 0 3px ${accent}22, 0 10px 24px rgba(15, 23, 42, 0.08)`
+        : baseStyle.boxShadow || "0 1px 3px rgba(0,0,0,0.05)",
+      border: isActive
+        ? `1px solid ${accent}66`
+        : baseStyle.border || "1px solid #e5e7eb",
+    };
+  };
+
   useEffect(() => {
-    const fetchData = async () => {
+    let isMounted = true;
+    refreshLockRef.current = false;
+    previousSnapshotRef.current = null;
+    clearHighlightTimers();
+
+    const loadData = async ({ showLoader = false } = {}) => {
       try {
-        setLoading(true);
-        setError(null);
+        if (!isMounted) {
+          return;
+        }
 
-        const machineRes = await api.get(`/machines/${machineId}`);
+        if (showLoader) {
+          setInitialLoading(true);
+          setError(null);
+        } else {
+          setIsRefreshing(true);
+        }
+
+        const [machineRes, telemRes, alertsRes] = await Promise.all([
+          api.get(`/machines/${machineId}`),
+          api.get(`/telemetry/history/${machineId}?limit=50`),
+          api.get("/alerts"),
+        ]);
+
         const machineData = machineRes.data?.machine || machineRes.data;
-        console.log("Machine data:", machineData);
-        setMachine(machineData);
 
-        const telemRes = await api.get(
-          `/telemetry/history/${machineId}?limit=50`,
-        );
         const telemData = Array.isArray(telemRes.data)
           ? telemRes.data
           : telemRes.data?.telemetry || telemRes.data?.data || [];
-        console.log("Telemetry data:", telemData.length, telemData);
-        setTelemetry(telemData.reverse());
+
+        const telemetryAsc = [...telemData].reverse();
+
+        const allAlerts = alertsRes.data?.alerts || [];
+        const machineAlerts = allAlerts
+          .filter((a) => {
+            const id =
+              typeof a.machineId === "object" ? a.machineId?._id : a.machineId;
+            return id === machineId;
+          })
+          .sort(
+            (a, b) =>
+              new Date(b.triggeredAt || b.createdAt) -
+              new Date(a.triggeredAt || a.createdAt),
+          );
+
+        let predictionData = null;
+        let predictionFetchFailed = false;
 
         try {
           const predictionRes = await api.get(
             `/analytics/predict/${machineId}`,
           );
-          const predictionData = predictionRes.data?.prediction || null;
-          console.log("Prediction data:", predictionData);
-          setPrediction(predictionData);
+          predictionData = predictionRes.data?.prediction || null;
         } catch (predictionError) {
+          predictionFetchFailed = true;
           console.error("Prediction fetch error:", predictionError);
+        }
+
+        if (!isMounted) {
+          return;
+        }
+
+        const nextSnapshot = buildSnapshot({
+          machineData,
+          telemetryAsc,
+          predictionData,
+          fallback: previousSnapshotRef.current,
+        });
+
+        const changedCardKeys = showLoader
+          ? []
+          : getChangedCardKeys(previousSnapshotRef.current, nextSnapshot);
+
+        previousSnapshotRef.current = nextSnapshot;
+
+        setMachine(machineData);
+        setTelemetry(telemetryAsc);
+        setAlerts(machineAlerts);
+
+        if (!predictionFetchFailed) {
+          setPrediction(predictionData);
+        } else if (showLoader) {
           setPrediction(null);
         }
 
-        const alertsRes = await api.get("/alerts");
-        const allAlerts = alertsRes.data?.alerts || [];
-        const machineAlerts = allAlerts.filter((a) => {
-          const id =
-            typeof a.machineId === "object" ? a.machineId?._id : a.machineId;
-          return id === machineId;
-        });
-        setAlerts(machineAlerts);
+        setLastUpdated(new Date());
+
+        if (changedCardKeys.length) {
+          triggerCardAnimations(changedCardKeys);
+        }
       } catch (err) {
         console.error("MachineDetail error:", err);
-        setError(
-          err.response?.data?.message ||
-            err.message ||
-            "Failed to load machine data",
-        );
+
+        if (showLoader && isMounted) {
+          setError(
+            err.response?.data?.message ||
+              err.message ||
+              "Failed to load machine data",
+          );
+        }
       } finally {
-        setLoading(false);
+        // Avoid returning from inside finally block which can mask errors.
+        // Only update state if component is still mounted.
+        if (isMounted) {
+          if (showLoader) {
+            setInitialLoading(false);
+          } else {
+            setIsRefreshing(false);
+          }
+        }
       }
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+    loadData({ showLoader: true });
+
+    const interval = setInterval(async () => {
+      if (refreshLockRef.current) return;
+
+      refreshLockRef.current = true;
+
+      try {
+        await loadData({ showLoader: false });
+      } finally {
+        refreshLockRef.current = false;
+      }
+    }, 10000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      clearHighlightTimers();
+    };
   }, [machineId]);
 
-  if (loading) {
+  if (initialLoading && !machine) {
     return (
       <div
         style={{
@@ -111,7 +315,7 @@ export default function MachineDetailPage() {
     );
   }
 
-  if (error) {
+  if (error && !machine) {
     return (
       <div
         style={{ maxWidth: "1200px", margin: "0 auto", padding: "32px 24px" }}
@@ -302,19 +506,23 @@ export default function MachineDetailPage() {
       </div>
 
       <div
-        style={{
-          background: "#fff",
-          borderRadius: "12px",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-          border: "1px solid #e5e7eb",
-          padding: "24px",
-          marginBottom: "24px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "16px",
-        }}
+        style={withCardAnimation(
+          {
+            background: "#fff",
+            borderRadius: "12px",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+            border: "1px solid #e5e7eb",
+            padding: "24px",
+            marginBottom: "24px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "16px",
+          },
+          "current-status",
+          statusColor(machine.currentStatus),
+        )}
       >
         <div>
           <div
@@ -346,17 +554,36 @@ export default function MachineDetailPage() {
                 background: statusBg(machine.currentStatus),
                 color: statusColor(machine.currentStatus),
                 border: `1px solid ${statusColor(machine.currentStatus)}30`,
+                transition: "all 220ms ease",
               }}
             >
               {machine.currentStatus || "UNKNOWN"}
             </span>
           </div>
+
           <p style={{ margin: "4px 0", color: "#6b7280", fontSize: "0.95rem" }}>
             <strong>Type:</strong> {machine.type || "N/A"} •{" "}
             <strong>Location:</strong> {machine.location || "N/A"}
           </p>
+
           <p style={{ margin: "4px 0", color: "#9ca3af", fontSize: "0.85rem" }}>
             Machine ID: {machine.machineId}
+          </p>
+
+          <p
+            style={{
+              margin: "8px 0 0",
+              fontSize: "0.8rem",
+              color: isRefreshing ? "#2563eb" : "#9ca3af",
+              fontWeight: isRefreshing ? 600 : 400,
+              transition: "color 200ms ease",
+            }}
+          >
+            {isRefreshing
+              ? "Updating..."
+              : lastUpdated
+                ? `Last updated: ${lastUpdated.toLocaleTimeString()}`
+                : "Waiting for first update..."}
           </p>
         </div>
 
@@ -375,6 +602,7 @@ export default function MachineDetailPage() {
               fontSize: "1.25rem",
               fontWeight: 700,
               color: statusColor(machine.currentStatus),
+              transition: "color 220ms ease",
             }}
           >
             {machine.currentStatus || "—"}
@@ -421,12 +649,16 @@ export default function MachineDetailPage() {
             }}
           >
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background: "#f9fafb",
-                border: "1px solid #e5e7eb",
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                },
+                "pred-temp",
+                "#dc2626",
+              )}
             >
               <div
                 style={{
@@ -449,12 +681,16 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background: "#f9fafb",
-                border: "1px solid #e5e7eb",
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                },
+                "pred-vib",
+                "#7c3aed",
+              )}
             >
               <div
                 style={{
@@ -477,12 +713,16 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background: statusBg(prediction.predictedStatus),
-                border: `1px solid ${statusColor(prediction.predictedStatus)}30`,
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background: statusBg(prediction.predictedStatus),
+                  border: `1px solid ${statusColor(prediction.predictedStatus)}30`,
+                },
+                "pred-status",
+                statusColor(prediction.predictedStatus),
+              )}
             >
               <div
                 style={{
@@ -505,12 +745,20 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background: "#f9fafb",
-                border: "1px solid #e5e7eb",
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background: "#f9fafb",
+                  border: "1px solid #e5e7eb",
+                },
+                "risk-score",
+                prediction.riskScore >= 80
+                  ? "#dc2626"
+                  : prediction.riskScore >= 60
+                    ? "#ea580c"
+                    : "#16a34a",
+              )}
             >
               <div
                 style={{
@@ -538,23 +786,31 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background:
-                  prediction.nextEvent === "ESCALATION"
-                    ? "#fef2f2"
-                    : prediction.nextEvent === "ALERT"
-                      ? "#fff7ed"
-                      : "#f9fafb",
-                border: `1px solid ${
-                  prediction.nextEvent === "ESCALATION"
-                    ? "#dc2626"
-                    : prediction.nextEvent === "ALERT"
-                      ? "#ea580c"
-                      : "#e5e7eb"
-                }`,
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background:
+                    prediction.nextEvent === "ESCALATION"
+                      ? "#fef2f2"
+                      : prediction.nextEvent === "ALERT"
+                        ? "#fff7ed"
+                        : "#f9fafb",
+                  border: `1px solid ${
+                    prediction.nextEvent === "ESCALATION"
+                      ? "#dc2626"
+                      : prediction.nextEvent === "ALERT"
+                        ? "#ea580c"
+                        : "#e5e7eb"
+                  }`,
+                },
+                "next-event",
+                prediction.nextEvent === "ESCALATION"
+                  ? "#dc2626"
+                  : prediction.nextEvent === "ALERT"
+                    ? "#ea580c"
+                    : "#6b7280",
+              )}
             >
               <div
                 style={{
@@ -582,23 +838,27 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background:
-                  prediction.nextEvent === "ESCALATION"
-                    ? "#fef2f2"
-                    : prediction.nextEvent === "ALERT"
-                      ? "#fff7ed"
-                      : "#f9fafb",
-                border: `1px solid ${
-                  prediction.nextEvent === "ESCALATION"
-                    ? "#dc2626"
-                    : prediction.nextEvent === "ALERT"
-                      ? "#ea580c"
-                      : "#e5e7eb"
-                }`,
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background:
+                    prediction.nextEvent === "ESCALATION"
+                      ? "#fef2f2"
+                      : prediction.nextEvent === "ALERT"
+                        ? "#fff7ed"
+                        : "#f9fafb",
+                  border: `1px solid ${
+                    prediction.nextEvent === "ESCALATION"
+                      ? "#dc2626"
+                      : prediction.nextEvent === "ALERT"
+                        ? "#ea580c"
+                        : "#e5e7eb"
+                  }`,
+                },
+                "time-alert",
+                "#ea580c",
+              )}
             >
               <div
                 style={{
@@ -614,13 +874,13 @@ export default function MachineDetailPage() {
                   fontSize: "1.1rem",
                   fontWeight: 700,
                   color:
-                    prediction.timeToAlertMinutes === null
+                    prediction.timeToAlertMinutes == null
                       ? "#6b7280"
                       : "#ea580c",
                   marginBottom: "4px",
                 }}
               >
-                {prediction.timeToAlertMinutes === null
+                {prediction.timeToAlertMinutes == null
                   ? "Not expected"
                   : `${prediction.timeToAlertMinutes} min`}
               </div>
@@ -635,19 +895,23 @@ export default function MachineDetailPage() {
             </div>
 
             <div
-              style={{
-                padding: "16px",
-                borderRadius: "10px",
-                background:
-                  prediction.timeToEscalationMinutes !== null
-                    ? "#fef2f2"
-                    : "#f9fafb",
-                border: `1px solid ${
-                  prediction.timeToEscalationMinutes !== null
-                    ? "#dc2626"
-                    : "#e5e7eb"
-                }`,
-              }}
+              style={withCardAnimation(
+                {
+                  padding: "16px",
+                  borderRadius: "10px",
+                  background:
+                    prediction.timeToEscalationMinutes != null
+                      ? "#fef2f2"
+                      : "#f9fafb",
+                  border: `1px solid ${
+                    prediction.timeToEscalationMinutes != null
+                      ? "#dc2626"
+                      : "#e5e7eb"
+                  }`,
+                },
+                "time-escalation",
+                "#dc2626",
+              )}
             >
               <div
                 style={{
@@ -663,13 +927,13 @@ export default function MachineDetailPage() {
                   fontSize: "1.1rem",
                   fontWeight: 700,
                   color:
-                    prediction.timeToEscalationMinutes === null
+                    prediction.timeToEscalationMinutes == null
                       ? "#6b7280"
                       : "#dc2626",
                   marginBottom: "4px",
                 }}
               >
-                {prediction.timeToEscalationMinutes === null
+                {prediction.timeToEscalationMinutes == null
                   ? "Not expected"
                   : `${prediction.timeToEscalationMinutes} min`}
               </div>
@@ -703,13 +967,17 @@ export default function MachineDetailPage() {
           return (
             <div
               key={metric.key}
-              style={{
-                background: "#fff",
-                borderRadius: "12px",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-                border: "1px solid #e5e7eb",
-                padding: "20px",
-              }}
+              style={withCardAnimation(
+                {
+                  background: "#fff",
+                  borderRadius: "12px",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+                  border: "1px solid #e5e7eb",
+                  padding: "20px",
+                },
+                `metric-${metric.key}`,
+                metric.color,
+              )}
             >
               <div
                 style={{
